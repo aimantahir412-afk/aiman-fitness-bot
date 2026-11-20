@@ -4,8 +4,13 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from google import genai
 from google.genai import types
+from faq_search import search_faq
 
-# Load environment variables
+
+# -----------------------------------
+# ENVIRONMENT SETUP
+# -----------------------------------
+
 load_dotenv()
 
 API_KEY = os.getenv("GEMINI_API_KEY")
@@ -17,14 +22,15 @@ if not API_KEY:
 if not MODEL:
     raise ValueError("Please add GEMINI_MODEL to the .env file.")
 
-# Initialize Gemini client
 client = genai.Client(api_key=API_KEY)
 
-# Initialize FastAPI
 app = FastAPI(title="Fitness & Gym Coach Bot")
 
 
-# System instructions
+# -----------------------------------
+# SYSTEM INSTRUCTIONS
+# -----------------------------------
+
 SYSTEM_INSTRUCTION = """
 You are a helpful Fitness and Gym Coach Assistant.
 
@@ -35,20 +41,30 @@ Your responsibilities:
 4. Explain general gym rules and etiquette.
 5. Communicate in simple and friendly language.
 
-Function calling instructions:
-- When a user asks to book or check a session with a
-  specific trainer on a specific day, use the book_session tool.
+FUNCTION CALLING INSTRUCTIONS:
+
+1. BOOK_SESSION:
+- When a user asks to book or check a session with
+  a specific trainer on a specific day, use book_session.
+- If the trainer or day is missing, ask for that information.
 - Do not invent trainer availability.
-- If the trainer or day is missing, ask the user for that information.
 - Only confirm a booking when the tool returns success.
 - Explain that bookings use mock demonstration data.
 
-Safety guidelines:
+2. SEARCH_FAQ:
+- When a user asks about memberships, classes,
+  gym policies, or gym rules, use search_faq.
+- Use the information returned by the FAQ tool
+  to answer the user's question.
+- Do not invent gym policies or membership details.
+- If no relevant FAQ is found, explain that the
+  information is not available in the knowledge base.
+
+SAFETY GUIDELINES:
 - Do not diagnose medical conditions.
 - Do not recommend extreme exercise routines.
 - Encourage users to consult qualified professionals
   for personal medical or health concerns.
-- Do not invent gym policies or membership details.
 
 Stay focused on fitness and gym-related topics.
 """
@@ -66,7 +82,7 @@ gym_sessions = {
 
 
 # -----------------------------------
-# DAY 3: CUSTOM PYTHON FUNCTION
+# DAY 3: BOOK SESSION FUNCTION
 # -----------------------------------
 
 def book_session(trainer: str, day: str):
@@ -107,7 +123,7 @@ def book_session(trainer: str, day: str):
 
 
 # -----------------------------------
-# DAY 3: GEMINI JSON TOOL DECLARATION
+# DAY 3: BOOK SESSION TOOL DECLARATION
 # -----------------------------------
 
 book_session_declaration = types.FunctionDeclaration(
@@ -133,14 +149,43 @@ book_session_declaration = types.FunctionDeclaration(
 )
 
 
-# Register the function declaration as a Gemini tool
-book_session_tool = types.Tool(
-    function_declarations=[book_session_declaration]
+# -----------------------------------
+# DAY 4: FAQ SEARCH TOOL DECLARATION
+# -----------------------------------
+
+search_faq_declaration = types.FunctionDeclaration(
+    name="search_faq",
+    description=(
+        "Search the FitZone Gym FAQ knowledge base for accurate "
+        "information about memberships, fitness classes, and gym rules."
+    ),
+    parameters_json_schema={
+        "type": "object",
+        "properties": {
+            "question": {
+                "type": "string",
+                "description": "The user's question about gym policies."
+            }
+        },
+        "required": ["question"]
+    }
 )
 
 
 # -----------------------------------
-# DAY 2 + DAY 3: WEBSOCKET ENDPOINT
+# REGISTER BOTH GEMINI TOOLS
+# -----------------------------------
+
+gym_tools = types.Tool(
+    function_declarations=[
+        book_session_declaration,
+        search_faq_declaration
+    ]
+)
+
+
+# -----------------------------------
+# DAY 2 + DAY 3 + DAY 4: WEBSOCKET
 # -----------------------------------
 
 @app.websocket("/ws/chat")
@@ -148,7 +193,7 @@ async def websocket_chat(websocket: WebSocket):
 
     await websocket.accept()
 
-    # Store conversation history for this connection
+    # Conversation memory for this connection
     messages = []
 
     try:
@@ -160,7 +205,7 @@ async def websocket_chat(websocket: WebSocket):
             if not user_message.strip():
                 continue
 
-            # Add user message to conversation history
+            # Save user message
             messages.append(
                 types.Content(
                     role="user",
@@ -170,29 +215,29 @@ async def websocket_chat(websocket: WebSocket):
                 )
             )
 
-            # Tool-calling loop
+            # Allow multiple tool calls in one conversation turn
             max_tool_rounds = 3
 
             for tool_round in range(max_tool_rounds):
 
-                # Request Gemini response with streaming and tool
+                # Request Gemini response with both tools
                 stream = await client.aio.models.generate_content_stream(
                     model=MODEL,
                     contents=messages,
                     config=types.GenerateContentConfig(
                         system_instruction=SYSTEM_INSTRUCTION,
                         temperature=0.7,
-                        tools=[book_session_tool]
+                        tools=[gym_tools]
                     ),
                 )
 
                 bot_response = []
                 function_call_parts = []
 
-                # Receive response chunks
+                # Receive streaming response
                 async for chunk in stream:
 
-                    # Stream normal text responses
+                    # Stream normal text
                     if chunk.text:
                         bot_response.append(chunk.text)
 
@@ -212,12 +257,11 @@ async def websocket_chat(websocket: WebSocket):
                                     function_call_parts.append(part)
 
                 # -----------------------------------
-                # CHECK WHETHER GEMINI REQUESTED A TOOL
+                # CHECK FOR FUNCTION CALLS
                 # -----------------------------------
 
                 if not function_call_parts:
 
-                    # No function call: save normal bot response
                     complete_response = "".join(bot_response)
 
                     if complete_response:
@@ -234,7 +278,7 @@ async def websocket_chat(websocket: WebSocket):
 
                     break
 
-                # Save Gemini's function-call message
+                # Save Gemini function-call message
                 messages.append(
                     types.Content(
                         role="model",
@@ -243,7 +287,7 @@ async def websocket_chat(websocket: WebSocket):
                 )
 
                 # -----------------------------------
-                # EXECUTE CUSTOM PYTHON FUNCTION
+                # EXECUTE REQUESTED TOOLS
                 # -----------------------------------
 
                 function_response_parts = []
@@ -260,14 +304,14 @@ async def websocket_chat(websocket: WebSocket):
                         f"with arguments: {tool_args}"
                     )
 
-                    # Notify the WebSocket client
+                    # Notify WebSocket client
                     await websocket.send_json({
                         "type": "tool_call",
                         "name": tool_name,
                         "arguments": tool_args
                     })
 
-                    # Execute the requested Python function
+                    # Execute book_session
                     if tool_name == "book_session":
 
                         result = book_session(
@@ -275,7 +319,15 @@ async def websocket_chat(websocket: WebSocket):
                             day=str(tool_args.get("day", ""))
                         )
 
+                    # Execute search_faq
+                    elif tool_name == "search_faq":
+
+                        result = search_faq(
+                            question=str(tool_args.get("question", ""))
+                        )
+
                     else:
+
                         result = {
                             "success": False,
                             "message": "Unknown tool requested."
@@ -283,7 +335,7 @@ async def websocket_chat(websocket: WebSocket):
 
                     print("Tool result:", result)
 
-                    # Prepare function response for Gemini
+                    # Prepare response for Gemini
                     function_response_parts.append(
                         types.Part.from_function_response(
                             name=tool_name,
@@ -293,8 +345,6 @@ async def websocket_chat(websocket: WebSocket):
                         )
                     )
 
-                
-
                 # Send tool results back to Gemini
                 messages.append(
                     types.Content(
@@ -303,24 +353,24 @@ async def websocket_chat(websocket: WebSocket):
                     )
                 )
 
-
-
             else:
-                # Maximum tool-call rounds reached
+
                 await websocket.send_json({
                     "type": "error",
                     "message": "Maximum tool-call rounds reached."
                 })
 
-            # Finish this conversation turn
+            # Finish conversation turn
             await websocket.send_json({
                 "type": "done"
             })
 
     except WebSocketDisconnect:
+
         print("Client disconnected")
 
-    except Exception as error:  
+    except Exception as error:
+
         print("WebSocket error:", error)
 
         try:
@@ -335,4 +385,3 @@ async def websocket_chat(websocket: WebSocket):
 
         except Exception:
             pass
-

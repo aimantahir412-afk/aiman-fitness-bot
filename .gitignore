@@ -15,3 +15,6 @@ __pycache__/
 
 # Other generated files
 *.log
+
+# Local ChromaDB database
+chroma_db/

@@ -1,0 +1,78 @@
+
+[
+  {
+    "category": "membership",
+    "question": "What membership plans are available?",
+    "answer": "FitZone Gym offers monthly, quarterly, and yearly sample membership plans."
+  },
+  {
+    "category": "membership",
+    "question": "Can I renew my gym membership?",
+    "answer": "Yes, members can renew their membership before or after its expiration."
+  },
+  {
+    "category": "membership",
+    "question": "Can I pause my membership?",
+    "answer": "Members can request a temporary membership pause by contacting the gym reception."
+  },
+  {
+    "category": "membership",
+    "question": "Does the gym offer student discounts?",
+    "answer": "FitZone Gym offers a sample student discount on selected membership plans. Student verification is required."
+  },
+  {
+    "category": "membership",
+    "question": "Can I cancel my membership?",
+    "answer": "Members can submit a cancellation request to the gym reception. Any applicable terms should be checked before cancellation."
+  },
+  {
+    "category": "classes",
+    "question": "What fitness classes are available?",
+    "answer": "FitZone Gym offers sample yoga, cardio, strength training, and group fitness classes."
+  },
+  {
+    "category": "classes",
+    "question": "Do I need to register for a fitness class?",
+    "answer": "Yes, members should register for a class in advance because class spaces may be limited."
+  },
+  {
+    "category": "classes",
+    "question": "Are beginner-friendly classes available?",
+    "answer": "Yes, beginner-friendly sessions are included in the sample class schedule."
+  },
+  {
+    "category": "classes",
+    "question": "Can I attend multiple classes?",
+    "answer": "Members can attend multiple classes if their membership includes access and seats are available."
+  },
+  {
+    "category": "classes",
+    "question": "Where can I find the class schedule?",
+    "answer": "Members can check the latest class schedule at the gym reception."
+  },
+  {
+    "category": "gym_rules",
+    "question": "Should I bring a towel to the gym?",
+    "answer": "Members are encouraged to bring a personal towel when exercising."
+  },
+  {
+    "category": "gym_rules",
+    "question": "Should gym equipment be cleaned after use?",
+    "answer": "Yes, members should clean equipment after use to maintain hygiene."
+  },
+  {
+    "category": "gym_rules",
+    "question": "Are proper workout clothes required?",
+    "answer": "Members should wear comfortable and appropriate workout clothing and suitable footwear."
+  },
+  {
+    "category": "gym_rules",
+    "question": "Can beginners use gym equipment?",
+    "answer": "Yes, beginners can use gym equipment. They should ask a qualified trainer for guidance when needed."
+  },
+  {
+    "category": "gym_rules",
+    "question": "Are members allowed to share gym equipment?",
+    "answer": "Members should take turns and allow others to use equipment between sets."
+  }
+]
