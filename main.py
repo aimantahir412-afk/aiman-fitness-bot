@@ -1,9 +1,11 @@
 
 import os
 from dotenv import load_dotenv
+
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from google import genai
 from google.genai import types
+
 from faq_search import search_faq
 
 
@@ -25,6 +27,16 @@ if not MODEL:
 client = genai.Client(api_key=API_KEY)
 
 app = FastAPI(title="Fitness & Gym Coach Bot")
+
+
+# -----------------------------------
+# CONVERSATION MEMORY
+# -----------------------------------
+
+# Stores conversation history separately for each session ID.
+# History remains available while this FastAPI process is running.
+
+conversation_histories = {}
 
 
 # -----------------------------------
@@ -185,7 +197,7 @@ gym_tools = types.Tool(
 
 
 # -----------------------------------
-# DAY 2 + DAY 3 + DAY 4: WEBSOCKET
+# DAY 5: WEBSOCKET CHAT ENDPOINT
 # -----------------------------------
 
 @app.websocket("/ws/chat")
@@ -193,195 +205,255 @@ async def websocket_chat(websocket: WebSocket):
 
     await websocket.accept()
 
-    # Conversation memory for this connection
-    messages = []
+    print("\n========== WEBSOCKET CONNECTION OPENED ==========")
 
     try:
+
         while True:
 
-            # Receive user message
-            user_message = await websocket.receive_text()
+            # Receive session ID and message from Streamlit
+            data = await websocket.receive_json()
 
-            if not user_message.strip():
+            session_id = data.get("session_id")
+            user_message = data.get("message", "")
+
+            if not session_id:
+                await websocket.send_json({
+                    "type": "error",
+                    "message": "Session ID is missing."
+                })
+                await websocket.send_json({"type": "done"})
                 continue
 
-            # Save user message
-            messages.append(
-                types.Content(
-                    role="user",
-                    parts=[
-                        types.Part.from_text(text=user_message)
-                    ]
-                )
-            )
+            if not isinstance(user_message, str) or not user_message.strip():
+                await websocket.send_json({"type": "done"})
+                continue
 
-            # Allow multiple tool calls in one conversation turn
-            max_tool_rounds = 3
+            # Get existing history or create a new conversation
+            if session_id not in conversation_histories:
+                conversation_histories[session_id] = []
 
-            for tool_round in range(max_tool_rounds):
+                print("NEW CONVERSATION CREATED:", session_id)
 
-                # Request Gemini response with both tools
-                stream = await client.aio.models.generate_content_stream(
-                    model=MODEL,
-                    contents=messages,
-                    config=types.GenerateContentConfig(
-                        system_instruction=SYSTEM_INSTRUCTION,
-                        temperature=0.7,
-                        tools=[gym_tools]
-                    ),
-                )
+            messages = conversation_histories[session_id]
 
-                bot_response = []
-                function_call_parts = []
+            previous_history_length = len(messages)
 
-                # Receive streaming response
-                async for chunk in stream:
+            print("\nSESSION ID:", session_id)
+            print("MESSAGES BEFORE NEW QUESTION:", len(messages))
+            print("NEW USER MESSAGE:", user_message)
 
-                    # Stream normal text
-                    if chunk.text:
-                        bot_response.append(chunk.text)
+            try:
 
-                        await websocket.send_json({
-                            "type": "token",
-                            "content": chunk.text
-                        })
-
-                    # Detect function calls
-                    for candidate in chunk.candidates or []:
-
-                        if candidate.content:
-
-                            for part in candidate.content.parts or []:
-
-                                if part.function_call:
-                                    function_call_parts.append(part)
-
-                # -----------------------------------
-                # CHECK FOR FUNCTION CALLS
-                # -----------------------------------
-
-                if not function_call_parts:
-
-                    complete_response = "".join(bot_response)
-
-                    if complete_response:
-                        messages.append(
-                            types.Content(
-                                role="model",
-                                parts=[
-                                    types.Part.from_text(
-                                        text=complete_response
-                                    )
-                                ]
-                            )
-                        )
-
-                    break
-
-                # Save Gemini function-call message
-                messages.append(
-                    types.Content(
-                        role="model",
-                        parts=function_call_parts
-                    )
-                )
-
-                # -----------------------------------
-                # EXECUTE REQUESTED TOOLS
-                # -----------------------------------
-
-                function_response_parts = []
-
-                for part in function_call_parts:
-
-                    function_call = part.function_call
-
-                    tool_name = function_call.name
-                    tool_args = dict(function_call.args or {})
-
-                    print(
-                        f"Calling tool: {tool_name} "
-                        f"with arguments: {tool_args}"
-                    )
-
-                    # Notify WebSocket client
-                    await websocket.send_json({
-                        "type": "tool_call",
-                        "name": tool_name,
-                        "arguments": tool_args
-                    })
-
-                    # Execute book_session
-                    if tool_name == "book_session":
-
-                        result = book_session(
-                            trainer=str(tool_args.get("trainer", "")),
-                            day=str(tool_args.get("day", ""))
-                        )
-
-                    # Execute search_faq
-                    elif tool_name == "search_faq":
-
-                        result = search_faq(
-                            question=str(tool_args.get("question", ""))
-                        )
-
-                    else:
-
-                        result = {
-                            "success": False,
-                            "message": "Unknown tool requested."
-                        }
-
-                    print("Tool result:", result)
-
-                    # Prepare response for Gemini
-                    function_response_parts.append(
-                        types.Part.from_function_response(
-                            name=tool_name,
-                            response={
-                                "result": result
-                            }
-                        )
-                    )
-
-                # Send tool results back to Gemini
+                # Save the user's message
                 messages.append(
                     types.Content(
                         role="user",
-                        parts=function_response_parts
+                        parts=[
+                            types.Part.from_text(text=user_message)
+                        ]
                     )
                 )
 
-            else:
+                max_tool_rounds = 3
+                response_completed = False
 
+                # -----------------------------------
+                # GEMINI RESPONSE / TOOL LOOP
+                # -----------------------------------
+
+                for tool_round in range(max_tool_rounds):
+
+                    print(
+                        f"Starting Gemini response round: {tool_round + 1}"
+                    )
+
+                    stream = await client.aio.models.generate_content_stream(
+                        model=MODEL,
+                        contents=messages,
+                        config=types.GenerateContentConfig(
+                            system_instruction=SYSTEM_INSTRUCTION,
+                            temperature=0.7,
+                            tools=[gym_tools]
+                        ),
+                    )
+
+                    bot_response = []
+                    function_call_parts = []
+
+                    async for chunk in stream:
+
+                        # Stream normal text to Streamlit
+                        if chunk.text:
+
+                            bot_response.append(chunk.text)
+
+                            await websocket.send_json({
+                                "type": "token",
+                                "content": chunk.text
+                            })
+
+                        # Collect function calls
+                        for candidate in chunk.candidates or []:
+
+                            if candidate.content:
+
+                                for part in candidate.content.parts or []:
+
+                                    if part.function_call:
+                                        function_call_parts.append(part)
+
+                    # -----------------------------------
+                    # NO TOOL CALL
+                    # -----------------------------------
+
+                    if not function_call_parts:
+
+                        complete_response = "".join(bot_response)
+
+                        if complete_response:
+
+                            messages.append(
+                                types.Content(
+                                    role="model",
+                                    parts=[
+                                        types.Part.from_text(
+                                            text=complete_response
+                                        )
+                                    ]
+                                )
+                            )
+
+                        response_completed = True
+                        break
+
+                    # -----------------------------------
+                    # SAVE MODEL TOOL-CALL MESSAGE
+                    # -----------------------------------
+
+                    messages.append(
+                        types.Content(
+                            role="model",
+                            parts=function_call_parts
+                        )
+                    )
+
+                    function_response_parts = []
+
+                    # -----------------------------------
+                    # EXECUTE TOOLS
+                    # -----------------------------------
+
+                    for part in function_call_parts:
+
+                        function_call = part.function_call
+
+                        tool_name = function_call.name
+                        tool_args = dict(function_call.args or {})
+
+                        print(
+                            f"Calling tool: {tool_name} "
+                            f"with arguments: {tool_args}"
+                        )
+
+                        await websocket.send_json({
+                            "type": "tool_call",
+                            "name": tool_name,
+                            "arguments": tool_args
+                        })
+
+                        if tool_name == "book_session":
+
+                            result = book_session(
+                                trainer=str(
+                                    tool_args.get("trainer", "")
+                                ),
+                                day=str(
+                                    tool_args.get("day", "")
+                                )
+                            )
+
+                        elif tool_name == "search_faq":
+
+                            result = search_faq(
+                                question=str(
+                                    tool_args.get("question", "")
+                                )
+                            )
+
+                        else:
+
+                            result = {
+                                "success": False,
+                                "message": "Unknown tool requested."
+                            }
+
+                        print("Tool result:", result)
+
+                        function_response_parts.append(
+                            types.Part.from_function_response(
+                                name=tool_name,
+                                response={"result": result}
+                            )
+                        )
+
+                    # Send tool results back to Gemini
+                    messages.append(
+                        types.Content(
+                            role="user",
+                            parts=function_response_parts
+                        )
+                    )
+
+                # -----------------------------------
+                # CHECK TOOL LOOP COMPLETION
+                # -----------------------------------
+
+                if not response_completed:
+
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "Maximum tool-call rounds reached."
+                    })
+
+                # Finish this turn
                 await websocket.send_json({
-                    "type": "error",
-                    "message": "Maximum tool-call rounds reached."
+                    "type": "done"
                 })
 
-            # Finish conversation turn
-            await websocket.send_json({
-                "type": "done"
-            })
+            except Exception as error:
+
+                # Remove incomplete turn if processing fails
+                del messages[previous_history_length:]
+
+                print("\nERROR PROCESSING USER MESSAGE:")
+                print(repr(error))
+
+                try:
+
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": (
+                            "The bot encountered an error. "
+                            "Please try asking your question again."
+                        )
+                    })
+
+                    await websocket.send_json({
+                        "type": "done"
+                    })
+
+                except Exception:
+                    break
 
     except WebSocketDisconnect:
 
-        print("Client disconnected")
+        print("WebSocket client disconnected.")
 
     except Exception as error:
 
-        print("WebSocket error:", error)
+        print("WebSocket connection error:", repr(error))
 
-        try:
-            await websocket.send_json({
-                "type": "error",
-                "message": "The bot encountered an error. Please try again."
-            })
+    finally:
 
-            await websocket.send_json({
-                "type": "done"
-            })
-
-        except Exception:
-            pass
+        print("========== WEBSOCKET CONNECTION CLOSED ==========")
